@@ -18,6 +18,10 @@ import org.apache.commons.cli.DefaultParser;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 
+import technology.tabula.diff.DiffConfig;
+import technology.tabula.diff.DiffJsonWriter;
+import technology.tabula.diff.DiffResult;
+import technology.tabula.diff.TableDiffer;
 import technology.tabula.detectors.DetectionAlgorithm;
 import technology.tabula.detectors.NurminenDetectionAlgorithm;
 import technology.tabula.extractors.BasicExtractionAlgorithm;
@@ -96,6 +100,22 @@ public class CommandLineApp {
             return;
         }
 
+        if (line.hasOption(DiffConfig.DIFF_OPTION)) {
+            if (line.getArgs().length != 2) {
+                throw new ParseException("Diff mode needs exactly two filenames: OLD_PDF NEW_PDF\nTry --help for help");
+            }
+            if (line.hasOption('o')) {
+                throw new ParseException("Diff mode cannot be combined with --outfile");
+            }
+            File oldPdf = new File(line.getArgs()[0]);
+            File newPdf = new File(line.getArgs()[1]);
+            if (!oldPdf.exists() || !newPdf.exists()) {
+                throw new ParseException("File does not exist");
+            }
+            extractDiff(line, oldPdf, newPdf);
+            return;
+        }
+
         if (line.getArgs().length != 1) {
             throw new ParseException("Need exactly one filename\nTry --help for help");
         }
@@ -105,6 +125,25 @@ public class CommandLineApp {
             throw new ParseException("File does not exist");
         }
         extractFileTables(line, pdfFile);
+    }
+
+    private void extractDiff(CommandLine line, File oldPdf, File newPdf) throws ParseException {
+        DiffConfig diffConfig = DiffConfig.fromCommandLine(line);
+        List<Table> oldTables = extractAllTables(oldPdf);
+        List<Table> newTables = extractAllTables(newPdf);
+
+        DiffResult result = new TableDiffer(diffConfig)
+                .diff(oldTables, oldPdf.getName(), newTables, newPdf.getName());
+
+        DiffJsonWriter diffWriter = new DiffJsonWriter();
+        try {
+            diffWriter.writeDelta(this.defaultOutput, result);
+            if (result.hasErrors()) {
+                diffWriter.writeErrors(System.err, result.getErrors());
+            }
+        } catch (IOException e) {
+            throw new ParseException(e.getMessage());
+        }
     }
 
     public void extractDirectoryTables(CommandLine line, File pdfDirectory) throws ParseException {
@@ -157,6 +196,14 @@ public class CommandLineApp {
     }
 
     private void extractFile(File pdfFile, Appendable outFile) throws ParseException {
+        try {
+            writeTables(extractAllTables(pdfFile), outFile);
+        } catch (IOException e) {
+            throw new ParseException(e.getMessage());
+        }
+    }
+
+    private List<Table> extractAllTables(File pdfFile) throws ParseException {
         PDDocument pdfDocument = null;
         try {
             pdfDocument = this.password == null ?  Loader.loadPDF(pdfFile) :  Loader.loadPDF(pdfFile,password);
@@ -186,7 +233,7 @@ public class CommandLineApp {
                     tables.addAll(tableExtractor.extractTables(page));
                 }
             }
-            writeTables(tables, outFile);
+            return tables;
         } catch (IOException e) {
             throw new ParseException(e.getMessage());
         } finally {
@@ -363,6 +410,22 @@ public class CommandLineApp {
                 .desc("Comma separated list of ranges, or all. Examples: --pages 1-3,5-7, --pages 3 or --pages all. Default is --pages 1")
                 .hasArg()
                 .argName("PAGES")
+                .build());
+        o.addOption(Option.builder()
+                .longOpt(DiffConfig.DIFF_OPTION)
+                .desc("Compare two PDFs (given as OLD_PDF NEW_PDF) using the same extraction settings and print a JSON delta instead of extracting a single file. Requires --keys. Page breaks, in-cell line breaks and column order are ignored.")
+                .build());
+        o.addOption(Option.builder()
+                .longOpt(DiffConfig.KEYS_OPTION)
+                .desc("Diff mode only. Comma separated composite primary key column names, matched against the first-row header of every table. Key components are trimmed and must be unique across all pages of each file.")
+                .hasArg()
+                .argName("COLUMN_NAMES")
+                .build());
+        o.addOption(Option.builder()
+                .longOpt(DiffConfig.COMPARE_FIELDS_OPTION)
+                .desc("Diff mode only. Comma separated column names to compare. Defaults to every non-key column of each table.")
+                .hasArg()
+                .argName("COLUMN_NAMES")
                 .build());
 
         return o;

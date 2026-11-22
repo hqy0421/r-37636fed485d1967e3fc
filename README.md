@@ -71,6 +71,75 @@ Tabula helps you extract tables from PDFs
 
 It also includes a debugging tool, run `java -cp ./target/tabula-1.0.5-jar-with-dependencies.jar technology.tabula.debug.Debug -h` for the available options.
 
+## Two-PDF comparison mode (delta extraction)
+
+When a supplier re-sends a complete inventory PDF, the warehouse only needs the
+changes. Pass two PDFs (the old version followed by the new version) with
+`--diff`; both files are extracted with the same extraction settings
+(`--area`, `--columns`, `--lattice`/`--stream`, `--pages`, ...) and a JSON
+delta is written to stdout instead of the normal extraction output.
+
+```
+$ java -jar target/tabula-1.0.5-jar-with-dependencies.jar \
+    old_inventory.pdf new_inventory.pdf \
+    --diff --keys sku,warehouse --pages all
+```
+
+ - `--keys <COLUMN_NAMES>` (required): comma separated column names forming the
+   composite primary key. Names are matched against the first-row header of
+   every extracted table. Key components are trimmed of leading/trailing
+   whitespace and must be unique across all pages of each file.
+ - `--compare-fields <COLUMN_NAMES>` (optional): comma separated column names
+   to compare. Defaults to every non-key column of each table.
+
+Tables continued on later pages are supported: repeated header rows are
+ignored, and header-less continuation tables reuse the first table's column
+schema. Moving a record to another page, wrapping its text across lines inside
+a cell, or reordering columns never produces a change — rows are matched by
+key, CR/LF inside cells is normalized to spaces and columns are looked up by
+name.
+
+Each delta element carries the composite key, the change type, only the fields
+relevant to the change, and the page/row position where the record exists in
+each version (row numbers are 1-based and include the header row):
+
+```json
+[
+  {
+    "change_type": "modified",
+    "key": {"sku": "A1", "warehouse": "WH1"},
+    "changes": {"price": ["5.00", "5.50"]},
+    "old_position": {"file_name": "old_inventory.pdf", "page_number": 1, "row_number": 2},
+    "new_position": {"file_name": "new_inventory.pdf", "page_number": 1, "row_number": 2}
+  },
+  {
+    "change_type": "deleted",
+    "key": {"sku": "A2", "warehouse": "WH1"},
+    "data": {"qty": "20", "price": "7.00"},
+    "old_position": {"file_name": "old_inventory.pdf", "page_number": 1, "row_number": 3}
+  },
+  {
+    "change_type": "added",
+    "key": {"sku": "A4", "warehouse": "WH3"},
+    "data": {"qty": "40", "price": "1.00"},
+    "new_position": {"file_name": "new_inventory.pdf", "page_number": 1, "row_number": 4}
+  }
+]
+```
+
+`modified` entries list only the fields whose value actually changed, each with
+its old and new value; `added`/`deleted` entries carry all compared fields in
+`data`. The delta is sorted stably by the composite key and is an empty array
+(`[]`) when nothing changed.
+
+Data-quality problems — missing key/compare columns, empty key components and
+duplicate keys — do not abort the run. They are reported one JSON object per
+line on **stderr**, each identifying the file and page/row position (header
+problems use row 1); the offending rows are excluded from the delta on stdout.
+
+Without `--diff`, the tool behaves exactly as before and extracts a single
+PDF.
+
 You can also integrate `tabula-java` with any JVM language. For Java examples, see the [`tests`](src/test/java/technology/tabula/) folder.
 
 JVM start-up time is a lot of the cost of the `tabula` command, so if you're trying to extract many tables from PDFs, you have a few options for speeding it up:
